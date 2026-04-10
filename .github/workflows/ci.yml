@@ -1,0 +1,48 @@
+name: AI DevOps System Workflow
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  run-ai-agent:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Needed to push fixes
+      pull-requests: write # Needed to create PRs
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Start Services
+      run: docker-compose up -d mongo backend frontend mcp-server
+
+    - name: Run AI Agent
+      env:
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      run: docker-compose run agent npm start
+
+    - name: Check for Agent Fixes
+      run: |
+        git config user.name "AI Agent"
+        git config user.email "agent@monorepo.local"
+        if [ -n "$(git status --porcelain)" ]; then
+            echo "Changes found. Pushing branch..."
+            git add .
+            git commit -m "AI Agent automated fix"
+            git push origin HEAD:ai-fix-${{ github.run_id }}
+            
+            # Create a PR using gh cli
+            gh pr create \
+              --title "Automated fix by AI Agent" \
+              --body "The AI Agent detected a test failure and has generated this fix. Please review." \
+              --head ai-fix-${{ github.run_id }} \
+              --base main
+        else
+            echo "No fixes generated. All tests passed."
+        fi
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
