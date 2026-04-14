@@ -1,3 +1,4 @@
+require('dotenv').config();
 const axios = require('axios');
 const OpenAI = require('openai');
 const { execSync } = require('child_process');

@@ -1,11 +1,4 @@
 services:
-  mongo:
-    image: mongo:latest
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongo-data:/data/db
-
   backend:
     build:
       context: ./apps/backend
@@ -13,8 +6,6 @@ services:
       - "3000:3000"
     env_file:
       - ./apps/backend/.env
-    depends_on:
-      - mongo
 
   frontend:
     build:
@@ -23,6 +14,8 @@ services:
       - "5173:5173"
     env_file:
       - ./apps/frontend/.env
+    depends_on:
+      - backend
 
   mcp-server:
     build:
@@ -30,7 +23,7 @@ services:
     ports:
       - "4000:4000"
     volumes:
-      - .:/workspace # Mount repo for Git and Read file ops
+      - .:/workspace
     env_file:
       - ./apps/mcp-server/.env
     depends_on:
@@ -43,6 +36,3 @@ services:
       - ./apps/agent/.env
     depends_on:
       - mcp-server
-
-volumes:
-  mongo-data:
