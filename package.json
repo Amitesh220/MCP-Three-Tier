@@ -2,6 +2,10 @@
   "name": "ai-devops-monorepo",
   "version": "1.0.0",
   "private": true,
+  "scripts": {
+    "setup": "npm install && npx playwright install --with-deps",
+    "start": "node start-all.js"
+  },
   "workspaces": [
     "apps/*"
   ]
