@@ -6,6 +6,7 @@ const path = require('path');
 const { triageIssues } = require('./triage');
 
 const MCP_SERVER_URL = process.env.MCP_SERVER_URL || 'http://localhost:4000';
+const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS) || 60000; // 1 min between cycles
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // In Docker, the repo is mounted at /workspace. Switch cwd so git operations work.
@@ -20,7 +21,7 @@ const WORKSPACE_DIR = process.cwd();
 
 // ─── Helper: Call MCP /run-tests ───────────────────────────────────────
 async function runTests() {
-  console.log('[Agent] Triggering E2E tests via MCP server...');
+  console.log('[Agent] 🧪 Running tests via MCP server...');
   const res = await axios.post(`${MCP_SERVER_URL}/run-tests`, {}, { timeout: 180000 });
   return res.data;
 }
@@ -61,70 +62,100 @@ async function waitForMCP(maxRetries = 10, intervalMs = 3000) {
   throw new Error(`MCP server not reachable after ${maxRetries} attempts at ${MCP_SERVER_URL}`);
 }
 
-// ─── Main Agent Flow ───────────────────────────────────────────────────
-async function main() {
-  console.log('\n[Agent] ============================================');
-  console.log('[Agent] AI DevOps Agent started');
-  console.log('[Agent] ============================================\n');
+// ─── Helper: Sync to latest main branch ────────────────────────────────
+function syncToLatestMain() {
+  console.log('[Agent] 🔄 Syncing to latest code on main...');
+  try {
+    // Discard any local changes from previous cycle
+    gitExec('git checkout -- .');
+    gitExec('git clean -fd');
+  } catch {
+    // Ignore if nothing to clean
+  }
 
   try {
-    // ── Step 0: Wait for MCP server readiness ──────────────────────
-    await waitForMCP();
-
-    // ── Step 1: Run tests ──────────────────────────────────────────
-    const testResults = await runTests();
-
-    if (testResults.success) {
-      console.log('[Agent] ✅ All tests passed! No action needed.');
-      return;
-    }
-
-    // ── Step 2: Collect failures ───────────────────────────────────
-    const failures = testResults.failures || [];
-
-    if (failures.length === 0) {
-      console.log('[Agent] ⚠️  Tests reported failure but no structured failures found. Exiting.');
-      return;
-    }
-
-    console.log(`[Agent] ❌ ${failures.length} test failure(s) detected.`);
-    failures.forEach((f, i) => {
-      console.log(`[Agent]   ${i + 1}. [${f.type}] ${f.test}: ${f.error.substring(0, 120)}`);
-    });
-
-    // ── Step 3: Triage ─────────────────────────────────────────────
-    const prioritizedIssues = await triageIssues(failures);
-
-    if (prioritizedIssues.length === 0) {
-      console.log('[Agent] No issues were prioritized for fixing. Exiting.');
-      return;
-    }
-
-    // ── Step 4: Create a single branch for all fixes ───────────────
-    const branchName = `ai-fix-${Date.now()}`;
-    console.log(`[Agent] Creating branch: ${branchName}`);
-
+    gitExec('git checkout main');
+  } catch {
     try {
-      gitExec('git checkout main 2>/dev/null || git checkout master');
+      gitExec('git checkout master');
     } catch {
-      console.log('[Agent] Could not checkout main/master, continuing on current branch.');
+      console.log('[Agent] ⚠️  Could not checkout main/master, staying on current branch.');
     }
-    gitExec(`git checkout -b ${branchName}`);
+  }
 
-    let fixesApplied = 0;
+  try {
+    gitExec('git pull origin main');
+    console.log('[Agent] ✅ Code synced to latest main.');
+  } catch {
+    try {
+      gitExec('git pull origin master');
+      console.log('[Agent] ✅ Code synced to latest master.');
+    } catch (err) {
+      console.log(`[Agent] ⚠️  Could not pull latest: ${err.message}. Continuing with current state.`);
+    }
+  }
+}
 
-    // ── Step 5: Fix each prioritized issue ─────────────────────────
-    for (let i = 0; i < prioritizedIssues.length; i++) {
-      const issueObj = prioritizedIssues[i];
-      const failure = issueObj.originalIssue;
+// ─── Single Pipeline Cycle ─────────────────────────────────────────────
+async function runCycle(cycleNumber) {
+  console.log(`\n[Agent] ╔══════════════════════════════════════════════╗`);
+  console.log(`[Agent] ║  Pipeline Cycle #${cycleNumber} — ${new Date().toISOString()}  ║`);
+  console.log(`[Agent] ╚══════════════════════════════════════════════╝\n`);
 
-      console.log(`\n[Agent] ── Fixing issue ${i + 1}/${prioritizedIssues.length} ──`);
-      console.log(`[Agent]    Severity: ${issueObj.severity} | Type: ${issueObj.type}`);
-      console.log(`[Agent]    Test: ${failure.test}`);
-      console.log(`[Agent]    Error: ${failure.error.substring(0, 150)}`);
+  // ── Step 1: Sync to latest main ────────────────────────────────
+  syncToLatestMain();
 
-      // 5a. Context extraction — ask LLM which file is likely causing the issue
-      const triagePrompt = `You are analyzing a test failure in a React + Node.js monorepo.
+  // ── Step 2: Run tests ──────────────────────────────────────────
+  const testResults = await runTests();
+
+  if (testResults.success) {
+    console.log('[Agent] ✅ All tests passed! No action needed this cycle.');
+    return;
+  }
+
+  // ── Step 3: Collect failures ───────────────────────────────────
+  const failures = testResults.failures || [];
+
+  if (failures.length === 0) {
+    console.log('[Agent] ⚠️  Tests reported failure but no structured failures found. Skipping.');
+    return;
+  }
+
+  console.log(`[Agent] ❌ ${failures.length} test failure(s) detected.`);
+  failures.forEach((f, i) => {
+    console.log(`[Agent]   ${i + 1}. [${f.type}] ${f.test}: ${f.error.substring(0, 120)}`);
+  });
+
+  // ── Step 4: Triage (CRITICAL + top 2 HIGH only) ────────────────
+  console.log('[Agent] 🔍 Running triage...');
+  const prioritizedIssues = await triageIssues(failures);
+
+  if (prioritizedIssues.length === 0) {
+    console.log('[Agent] Triage result: no issues prioritized for fixing. Skipping.');
+    return;
+  }
+
+  console.log(`[Agent] Triage result: ${prioritizedIssues.length} issue(s) to fix.`);
+
+  // ── Step 5: Create a fix branch ────────────────────────────────
+  const branchName = `ai-fix-${Date.now()}`;
+  console.log(`[Agent] 🌿 Creating git branch: ${branchName}`);
+  gitExec(`git checkout -b ${branchName}`);
+
+  let fixesApplied = 0;
+
+  // ── Step 6: Fix each prioritized issue ─────────────────────────
+  for (let i = 0; i < prioritizedIssues.length; i++) {
+    const issueObj = prioritizedIssues[i];
+    const failure = issueObj.originalIssue;
+
+    console.log(`\n[Agent] ── Fixing prioritized issue ${i + 1}/${prioritizedIssues.length} ──`);
+    console.log(`[Agent]    Severity: ${issueObj.severity} | Type: ${issueObj.type}`);
+    console.log(`[Agent]    Test: ${failure.test}`);
+    console.log(`[Agent]    Error: ${failure.error.substring(0, 150)}`);
+
+    // 6a. Context extraction — ask LLM which file is likely causing the issue
+    const triagePrompt = `You are analyzing a test failure in a React + Node.js monorepo.
 
 Test name: ${failure.test}
 Error message: ${failure.error}
@@ -139,32 +170,32 @@ The project structure is:
 Based on the error, identify the SINGLE most likely file causing this issue.
 Return ONLY the relative file path (e.g., "apps/frontend/src/App.jsx"). No explanation.`;
 
-      const contextResponse = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: triagePrompt }]
-      });
+    const contextResponse = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: triagePrompt }]
+    });
 
-      const suspectFilePath = contextResponse.choices[0].message.content.trim().replace(/['"`]/g, '');
+    const suspectFilePath = contextResponse.choices[0].message.content.trim().replace(/['"`]/g, '');
 
-      if (!suspectFilePath || suspectFilePath.includes(' ')) {
-        console.log(`[Agent] ⚠️  Could not identify a valid file path. Got: "${suspectFilePath}". Skipping.`);
-        continue;
-      }
+    if (!suspectFilePath || suspectFilePath.includes(' ')) {
+      console.log(`[Agent] ⚠️  Could not identify a valid file path. Got: "${suspectFilePath}". Skipping.`);
+      continue;
+    }
 
-      console.log(`[Agent]    Suspect file: ${suspectFilePath}`);
+    console.log(`[Agent]    Suspect file: ${suspectFilePath}`);
 
-      // 5b. Read the suspect file
-      let fileContent;
-      try {
-        fileContent = await readFile(suspectFilePath);
-      } catch (err) {
-        console.log(`[Agent] ⚠️  Failed to read file ${suspectFilePath}: ${err.message}. Skipping.`);
-        continue;
-      }
+    // 6b. Read the suspect file
+    let fileContent;
+    try {
+      fileContent = await readFile(suspectFilePath);
+    } catch (err) {
+      console.log(`[Agent] ⚠️  Failed to read file ${suspectFilePath}: ${err.message}. Skipping.`);
+      continue;
+    }
 
-      // 5c. Generate fix via LLM
-      console.log(`[Agent]    Generating fix...`);
-      const fixPrompt = `You are fixing a bug in a React + Node.js application.
+    // 6c. Generate minimal fix via LLM
+    console.log(`[Agent]    Generating fix...`);
+    const fixPrompt = `You are fixing a bug in a React + Node.js application.
 
 FAILING TEST:
 - Test name: ${failure.test}
@@ -176,58 +207,82 @@ FILE TO FIX: ${suspectFilePath}
 ${fileContent}
 \`\`\`
 
+IMPORTANT RULES:
+- Make the MINIMUM change needed to fix the issue.
+- Do NOT refactor, rename, or restructure code.
+- Preserve all existing comments and formatting.
+- Only change what is broken.
+
 Provide the COMPLETE updated code for this file that fixes the issue.
 Return ONLY the raw source code. Do NOT wrap in markdown code blocks.
 Do NOT add any explanations before or after the code.`;
 
-      const fixResponse = await openai.chat.completions.create({
-        model: 'gpt-4o',
-        messages: [{ role: 'user', content: fixPrompt }]
-      });
+    const fixResponse = await openai.chat.completions.create({
+      model: 'gpt-4o',
+      messages: [{ role: 'user', content: fixPrompt }]
+    });
 
-      let newContent = fixResponse.choices[0].message.content.trim();
+    let newContent = fixResponse.choices[0].message.content.trim();
 
-      // Strip markdown fences if LLM adds them despite instructions
-      if (newContent.startsWith('```')) {
-        newContent = newContent.replace(/^```[a-zA-Z]*\n?/, '').replace(/\n?```$/, '');
-      }
-
-      // 5d. Apply the fix (file write via MCP)
-      const applyResult = await applyFix(suspectFilePath, newContent);
-      console.log(`[Agent]    ✅ Fix applied: ${applyResult.message}`);
-
-      // 5e. Stage and commit
-      gitExec(`git add ${suspectFilePath}`);
-      gitExec(`git commit -m "fix: ${issueObj.severity} - ${failure.test} (${suspectFilePath})"`);
-      fixesApplied++;
-
-      console.log(`[Agent]    ✅ Committed fix for ${suspectFilePath}`);
+    // Strip markdown fences if LLM adds them despite instructions
+    if (newContent.startsWith('```')) {
+      newContent = newContent.replace(/^```[a-zA-Z]*\n?/, '').replace(/\n?```$/, '');
     }
 
-    // ── Step 6: Push branch ────────────────────────────────────────
-    if (fixesApplied > 0) {
-      console.log(`\n[Agent] Pushing branch ${branchName} with ${fixesApplied} fix(es)...`);
-      gitExec(`git push origin ${branchName}`);
-      console.log(`[Agent] ✅ Branch pushed successfully.`);
-      console.log(`[Agent] 🔗 Create a PR from '${branchName}' → 'main' to review the fixes.`);
-    } else {
-      console.log('[Agent] No fixes were applied. Cleaning up branch...');
-      try {
-        gitExec('git checkout main 2>/dev/null || git checkout master');
-        gitExec(`git branch -D ${branchName}`);
-      } catch {
-        // Best-effort cleanup
-      }
-    }
+    // 6d. Apply the fix (file write via MCP)
+    const applyResult = await applyFix(suspectFilePath, newContent);
+    console.log(`[Agent]    ✅ Fix applied: ${applyResult.message}`);
 
-  } catch (err) {
-    console.error('[Agent] ❌ Workflow error:', err.response?.data || err.message);
-    process.exit(1);
+    // 6e. Stage and commit only the changed file
+    gitExec(`git add ${suspectFilePath}`);
+    gitExec(`git commit -m "fix: ${issueObj.severity} - ${failure.test} (${suspectFilePath})"`);
+    fixesApplied++;
+
+    console.log(`[Agent]    ✅ Committed fix for ${suspectFilePath}`);
   }
 
+  // ── Step 7: Push branch + log PR instructions ──────────────────
+  if (fixesApplied > 0) {
+    console.log(`\n[Agent] 🚀 Pushing branch ${branchName} with ${fixesApplied} fix(es)...`);
+    gitExec(`git push origin ${branchName}`);
+    console.log(`[Agent] ✅ Branch pushed successfully.`);
+    console.log(`[Agent] 🔗 Create a PR from '${branchName}' → 'main' to review the fixes.`);
+  } else {
+    console.log('[Agent] No fixes were applied. Cleaning up branch...');
+    try {
+      gitExec('git checkout main 2>/dev/null || git checkout master');
+      gitExec(`git branch -D ${branchName}`);
+    } catch {
+      // Best-effort cleanup
+    }
+  }
+}
+
+// ─── Continuous Pipeline Loop ──────────────────────────────────────────
+async function main() {
   console.log('\n[Agent] ============================================');
-  console.log('[Agent] Agent workflow completed');
+  console.log('[Agent] 🤖 AI DevOps Agent — Continuous Mode');
+  console.log(`[Agent] Poll interval: ${POLL_INTERVAL_MS / 1000}s`);
+  console.log(`[Agent] MCP server: ${MCP_SERVER_URL}`);
   console.log('[Agent] ============================================\n');
+
+  // Wait for MCP server readiness once at startup
+  await waitForMCP();
+
+  let cycle = 0;
+
+  while (true) {
+    cycle++;
+
+    try {
+      await runCycle(cycle);
+    } catch (err) {
+      console.error(`[Agent] ❌ Cycle #${cycle} failed:`, err.response?.data || err.message);
+    }
+
+    console.log(`[Agent] 💤 Polling for updates in ${POLL_INTERVAL_MS / 1000}s...\n`);
+    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+  }
 }
 
 main();

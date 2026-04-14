@@ -90,7 +90,7 @@ export default function Dashboard() {
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
-          <button className="btn-primary" onClick={handleCreate} data-testid="create-new-btn">
+          <button className="btn-primary" onClick={handleCreate} data-testid="create-btn">
             + Create New
           </button>
         </div>
