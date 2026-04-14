@@ -35,7 +35,6 @@ services:
     env_file:
       - ./apps/agent/.env
     volumes:
-      - .:/workspace   # ✅ IMPORTANT
-    working_dir: /workspace
+      - .:/workspace   # Mounted repo for git operations
     depends_on:
       - mcp-server
