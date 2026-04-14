@@ -145,17 +145,33 @@ app.post('/read-file', (req, res) => {
   const { filePath } = req.body;
   if (!filePath) return res.status(400).json({ error: 'filePath is required' });
 
-  const absolutePath = path.resolve(WORKSPACE_DIR, filePath);
-  const normalizedWorkspace = path.resolve(WORKSPACE_DIR);
+  // Always resolve against /workspace (Docker mount) or fallback
+  const baseDir = path.resolve(WORKSPACE_DIR);
+  const absolutePath = path.join(baseDir, filePath);
 
-  if (!absolutePath.startsWith(normalizedWorkspace)) {
+  console.log(`[MCP] Reading file: ${filePath}`);
+  console.log(`[MCP]   Resolved path: ${absolutePath}`);
+
+  // Security: prevent path traversal outside workspace
+  if (!absolutePath.startsWith(baseDir)) {
+    console.error(`[MCP]   ❌ Access denied: path escapes workspace`);
     return res.status(403).json({ error: 'Access denied outside workspace' });
   }
 
-  fs.readFile(absolutePath, 'utf8', (err, data) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ content: data });
-  });
+  // Check file exists before reading
+  if (!fs.existsSync(absolutePath)) {
+    console.error(`[MCP]   ❌ File not found: ${absolutePath}`);
+    return res.status(404).json({ error: `File not found: ${filePath}` });
+  }
+
+  try {
+    const content = fs.readFileSync(absolutePath, 'utf8');
+    console.log(`[MCP]   ✅ File read successfully (${content.length} chars)`);
+    res.json({ content });
+  } catch (err) {
+    console.error(`[MCP]   ❌ Error reading file: ${err.message}`);
+    res.status(500).json({ error: `Failed to read file: ${err.message}` });
+  }
 });
 
 // Apply a fix — write file only (git operations handled by agent)
@@ -166,10 +182,13 @@ app.post('/apply-fix', (req, res) => {
     return res.status(400).json({ error: 'filePath and content are required' });
   }
 
-  const absolutePath = path.resolve(WORKSPACE_DIR, filePath);
-  const normalizedWorkspace = path.resolve(WORKSPACE_DIR);
+  const baseDir = path.resolve(WORKSPACE_DIR);
+  const absolutePath = path.join(baseDir, filePath);
 
-  if (!absolutePath.startsWith(normalizedWorkspace)) {
+  console.log(`[MCP] Writing file: ${filePath}`);
+  console.log(`[MCP]   Resolved path: ${absolutePath}`);
+
+  if (!absolutePath.startsWith(baseDir)) {
     return res.status(403).json({ error: 'Access denied outside workspace' });
   }
 
