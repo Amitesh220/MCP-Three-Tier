@@ -5,11 +5,10 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install
 
+# Install test package only
 RUN npm install @playwright/test
 
 COPY . .
-
-RUN npx playwright install --with-deps
 
 EXPOSE 4000
 
