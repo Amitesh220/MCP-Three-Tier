@@ -9,15 +9,17 @@ const MCP_SERVER_URL = process.env.MCP_SERVER_URL || 'http://localhost:4000';
 const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS) || 60000; // 1 min between cycles
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// In Docker, the repo is mounted at /workspace. Switch cwd so git operations work.
+// In Docker, the repo is mounted at /workspace.
+// We MUST explicitly change to /workspace for Git commands to have the right context.
 try {
   process.chdir('/workspace');
-  console.log('[Agent] Working directory set to /workspace');
-} catch {
-  console.log(`[Agent] /workspace not found, using default cwd: ${process.cwd()}`);
+  console.log('[Agent] 📂 Working directory changed to /workspace');
+} catch (err) {
+  console.log(`[Agent] ⚠️ Could not chdir to /workspace. Ensure it is mounted! (${err.message})`);
 }
 
-const WORKSPACE_DIR = process.cwd();
+// Force all git commands to strictly run in /workspace
+const WORKSPACE_DIR = '/workspace';
 
 // ─── Helper: Call MCP /run-tests ───────────────────────────────────────
 async function runTests() {
