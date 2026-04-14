@@ -18,8 +18,8 @@ Analyze the following test failure and classify it.
 
 Severity Levels:
 - CRITICAL: App crash, API down, broken routes, server errors, connection failures.
-- HIGH: Business logic broken (wrong data, validation bugs, incorrect calculations).
-- MEDIUM: UI functional issues (buttons not working, state not updating, modal failures).
+- HIGH: Business logic broken (wrong data, validation bugs), OR explicit UI test failures containing words like "Timeout", "locator", "click", or "element not found".
+- MEDIUM: Minor UI functional issues (state not updating, visual defects not causing timeout).
 - LOW: Styling, alignment, or minor cosmetic UI issues.
 
 Type Categories:
@@ -85,20 +85,17 @@ function sortIssues(classifiedIssues) {
 }
 
 /**
- * Filter to keep only ALL CRITICAL and TOP 2 HIGH issues.
+ * Filter out LOW priority issues. Keep CRITICAL, HIGH, and MEDIUM.
  */
 function filterTopPriority(sortedIssues) {
-  const criticals = sortedIssues.filter(i => i.severity === 'CRITICAL');
-  const highs = sortedIssues.filter(i => i.severity === 'HIGH').slice(0, 2);
-
-  return [...criticals, ...highs];
+  return sortedIssues.filter(i => i.severity !== 'LOW');
 }
 
 /**
  * Full triage pipeline: classify all → sort → filter top priority.
  * 
  * @param {Array} failuresList - Array of failure objects from MCP /run-tests
- * @returns {Array} Prioritized issues (all CRITICAL + top 2 HIGH)
+ * @returns {Array} Prioritized issues (CRITICAL, HIGH, MEDIUM)
  */
 async function triageIssues(failuresList) {
   console.log(`\n[Triage] ========================================`);
@@ -117,7 +114,7 @@ async function triageIssues(failuresList) {
   const sorted = sortIssues(classified);
   const prioritized = filterTopPriority(sorted);
 
-  console.log(`[Triage] Forwarding ${prioritized.length} issue(s) to fixing agent (ALL CRITICAL + max 2 HIGH). Skipping ${classified.length - prioritized.length} lower-priority issues.`);
+  console.log(`[Triage] Forwarding ${prioritized.length} issue(s) to fixing agent (CRITICAL, HIGH, MEDIUM). Skipping ${classified.length - prioritized.length} LOW priority issues.`);
   console.log(`[Triage] ========================================\n`);
 
   return prioritized;

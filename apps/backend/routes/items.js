@@ -25,18 +25,8 @@ router.get('/:id', async (req, res) => {
 
 // Create item
 router.post('/', async (req, res) => {
-  const item = new Item({
-    name: req.body.name,
-    description: req.body.description,
-    status: req.body.status
-  });
-
-  try {
-    const newItem = await item.save();
-    res.status(201).json(newItem);
-  } catch (err) {
-    res.status(400).json({ message: err.message });
-  }
+  // INTENTIONAL BUG
+  return res.status(500).json({ message: 'Database connection failed unexpectedly' });
 });
 
 // Update item

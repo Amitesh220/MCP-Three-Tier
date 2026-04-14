@@ -37,7 +37,7 @@ export default function Table({ items, onEdit, onDelete }) {
                 <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
                   <button 
                     className="btn-icon" 
-                    title="Edit Item"
+                    title="Modify Item"
                     onClick={() => onEdit(item)}
                   >
                     ✎

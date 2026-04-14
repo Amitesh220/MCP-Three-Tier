@@ -139,7 +139,7 @@ async function runCycle(cycleNumber) {
 
   // ── Step 5: Create a fix branch ────────────────────────────────
   const branchName = `ai-fix-${Date.now()}`;
-  console.log(`[Agent] 🌿 Creating git branch: ${branchName}`);
+  console.log(`[Agent] 🌿 Branch created: ${branchName}`);
   gitExec(`git checkout -b ${branchName}`);
 
   let fixesApplied = 0;
@@ -168,7 +168,7 @@ The project structure is:
 - apps/mcp-server/ (Playwright test runner)
 
 Based on the error, identify the SINGLE most likely file causing this issue.
-Return ONLY the relative file path (e.g., "apps/frontend/src/App.jsx"). No explanation.`;
+Return ONLY the relative file path (e.g., "apps/frontend/src/pages/Dashboard.jsx"). No explanation.`;
 
     const contextResponse = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
@@ -232,6 +232,7 @@ Do NOT add any explanations before or after the code.`;
     // 6d. Apply the fix (file write via MCP)
     const applyResult = await applyFix(suspectFilePath, newContent);
     console.log(`[Agent]    ✅ Fix applied: ${applyResult.message}`);
+    console.log(`[Agent]    ✅ File updated: ${suspectFilePath}`);
 
     // 6e. Stage and commit only the changed file
     gitExec(`git add ${suspectFilePath}`);
@@ -241,12 +242,21 @@ Do NOT add any explanations before or after the code.`;
     console.log(`[Agent]    ✅ Committed fix for ${suspectFilePath}`);
   }
 
-  // ── Step 7: Push branch + log PR instructions ──────────────────
+  // ── Step 7: Push branch + Create PR ────────────────────────────
   if (fixesApplied > 0) {
     console.log(`\n[Agent] 🚀 Pushing branch ${branchName} with ${fixesApplied} fix(es)...`);
     gitExec(`git push origin ${branchName}`);
-    console.log(`[Agent] ✅ Branch pushed successfully.`);
-    console.log(`[Agent] 🔗 Create a PR from '${branchName}' → 'main' to review the fixes.`);
+    console.log(`[Agent] ✅ Pushed to origin successfully.`);
+
+    try {
+      // Create PR via GitHub CLI
+      const prOutput = execSync(`gh pr create --title "AI Fix: Automated Remediation (${branchName})" --body "The AI Agent automatically detected test failures and applied these fixes." --base main --head ${branchName}`, { cwd: WORKSPACE_DIR, encoding: 'utf8', stdio: 'pipe' });
+      console.log(`[Agent] ✅ PR created: ${prOutput.trim()}`);
+    } catch (err) {
+      console.log(`[Agent] ⚠️  Unable to create PR via CLI: Ensure GITHUB_TOKEN is set. (${err.message.substring(0, 100)})`);
+      console.log(`[Agent] 🔗 Manually create a PR from '${branchName}' → 'main'`);
+    }
+
   } else {
     console.log('[Agent] No fixes were applied. Cleaning up branch...');
     try {
