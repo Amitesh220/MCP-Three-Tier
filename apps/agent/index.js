@@ -187,7 +187,7 @@ Return ONLY the relative file path (e.g., "apps/frontend/src/pages/Dashboard.jsx
     // 6b. Read the suspect file
     let fileContent;
     let actualFilePath = suspectFilePath;
-    
+
     console.log(`[Agent] Using file: ${actualFilePath}`);
     try {
       fileContent = await readFile(actualFilePath);
@@ -195,12 +195,12 @@ Return ONLY the relative file path (e.g., "apps/frontend/src/pages/Dashboard.jsx
     } catch (err) {
       console.log(`[Agent] File exists: false`);
       console.log(`[Agent] 🔍 Running fallback search for correct file...`);
-      
+
       try {
         // Fallback: strictly find files in frontend containing "create", "button", or "testid"
         const grepOutput = execSync(`git grep -ilE "create|button|testid" -- apps/frontend/src/ || true`, { cwd: WORKSPACE_DIR, encoding: 'utf8' }).trim();
         const foundFiles = grepOutput.split('\n').filter(Boolean);
-        
+
         if (foundFiles.length > 0) {
           const fallbackPrompt = `The previous file did not exist. The test failed with:
 ${failure.error}
@@ -214,10 +214,10 @@ Identify which of these EXISTING files is most likely causing the issue. Return 
             model: 'gpt-4o-mini',
             messages: [{ role: 'user', content: fallbackPrompt }]
           });
-          
+
           actualFilePath = fallbackRes.choices[0].message.content.trim().replace(/['"`]/g, '');
           console.log(`[Agent] Using file: ${actualFilePath}`);
-          
+
           fileContent = await readFile(actualFilePath);
           console.log(`[Agent] File exists: true`);
         } else {
