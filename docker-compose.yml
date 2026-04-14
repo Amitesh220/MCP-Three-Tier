@@ -38,4 +38,4 @@ services:
       - .:/workspace
     depends_on:
       - mcp-server
-  restart: always   
+    restart: on-failure

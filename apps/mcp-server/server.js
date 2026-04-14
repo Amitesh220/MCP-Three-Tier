@@ -185,6 +185,11 @@ app.post('/apply-fix', (req, res) => {
   }
 });
 
+// Health check endpoint for service readiness
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok' });
+});
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[MCP] Server listening on port ${PORT}`);
 });

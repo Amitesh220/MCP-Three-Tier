@@ -45,6 +45,22 @@ function gitExec(command) {
   return execSync(command, { cwd: WORKSPACE_DIR, encoding: 'utf8', stdio: 'pipe' });
 }
 
+// ─── Helper: Wait for MCP server to be ready ───────────────────────────
+async function waitForMCP(maxRetries = 10, intervalMs = 3000) {
+  for (let i = 1; i <= maxRetries; i++) {
+    try {
+      console.log(`[Agent] Checking MCP at ${MCP_SERVER_URL}/health... (attempt ${i}/${maxRetries})`);
+      await axios.get(`${MCP_SERVER_URL}/health`, { timeout: 5000 });
+      console.log('[Agent] ✅ MCP server is ready.');
+      return;
+    } catch {
+      console.log(`[Agent] ⏳ MCP not ready, retrying in ${intervalMs / 1000}s...`);
+      await new Promise(r => setTimeout(r, intervalMs));
+    }
+  }
+  throw new Error(`MCP server not reachable after ${maxRetries} attempts at ${MCP_SERVER_URL}`);
+}
+
 // ─── Main Agent Flow ───────────────────────────────────────────────────
 async function main() {
   console.log('\n[Agent] ============================================');
@@ -52,6 +68,9 @@ async function main() {
   console.log('[Agent] ============================================\n');
 
   try {
+    // ── Step 0: Wait for MCP server readiness ──────────────────────
+    await waitForMCP();
+
     // ── Step 1: Run tests ──────────────────────────────────────────
     const testResults = await runTests();
 
