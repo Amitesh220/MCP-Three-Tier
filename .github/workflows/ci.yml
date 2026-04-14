@@ -10,39 +10,124 @@ on:
 jobs:
   run-ai-agent:
     runs-on: ubuntu-latest
+
     permissions:
-      contents: write # Needed to push fixes
-      pull-requests: write # Needed to create PRs
+      contents: write
+      pull-requests: write
+
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.runCommand({ping:1})'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      MONGO_URI: mongodb://localhost:27017/crud-test
+      BACKEND_PORT: 3000
+      FRONTEND_PORT: 5173
+      MCP_SERVER_PORT: 4000
+      VITE_API_URL: http://localhost:3000
+      FRONTEND_URL: http://localhost:5173
+      MCP_SERVER_URL: http://localhost:4000
+      WORKSPACE_DIR: ${{ github.workspace }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
     steps:
-    - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Start Services
-      run: docker-compose up -d mongo backend frontend mcp-server
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
 
-    - name: Run AI Agent
-      env:
-        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      run: docker-compose run agent npm start
+      # ── Install dependencies ──────────────────────────────────
+      - name: Install root dependencies (workspaces)
+        run: npm ci
 
-    - name: Check for Agent Fixes
-      run: |
-        git config user.name "AI Agent"
-        git config user.email "agent@monorepo.local"
-        if [ -n "$(git status --porcelain)" ]; then
-            echo "Changes found. Pushing branch..."
-            git add .
-            git commit -m "AI Agent automated fix"
-            git push origin HEAD:ai-fix-${{ github.run_id }}
-            
-            # Create a PR using gh cli
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+        working-directory: apps/mcp-server
+
+      # ── Start Backend ─────────────────────────────────────────
+      - name: Start Backend
+        run: |
+          node server.js &
+          echo "Waiting for backend..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3000/api/items > /dev/null 2>&1; then
+              echo "Backend is ready!"
+              break
+            fi
+            sleep 1
+          done
+        working-directory: apps/backend
+        env:
+          PORT: 3000
+
+      # ── Start Frontend ────────────────────────────────────────
+      - name: Start Frontend
+        run: |
+          npx vite --host 0.0.0.0 --port 5173 &
+          echo "Waiting for frontend..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:5173 > /dev/null 2>&1; then
+              echo "Frontend is ready!"
+              break
+            fi
+            sleep 1
+          done
+        working-directory: apps/frontend
+
+      # ── Start MCP Server ──────────────────────────────────────
+      - name: Start MCP Server
+        run: |
+          node server.js &
+          echo "Waiting for MCP server..."
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:4000 > /dev/null 2>&1 || [ $i -eq 15 ]; then
+              echo "MCP server is ready!"
+              break
+            fi
+            sleep 1
+          done
+        working-directory: apps/mcp-server
+        env:
+          PORT: 4000
+
+      # ── Run Agent ─────────────────────────────────────────────
+      - name: Run AI Agent
+        run: node index.js
+        working-directory: apps/agent
+
+      # ── Push fixes & create PR ────────────────────────────────
+      - name: Check for agent fixes and create PR
+        run: |
+          git config user.name "AI Agent"
+          git config user.email "agent@monorepo.local"
+
+          if [ -n "$(git status --porcelain)" ]; then
+            BRANCH="ai-fix-${{ github.run_id }}"
+            echo "Changes detected. Creating branch: $BRANCH"
+
+            git checkout -b "$BRANCH"
+            git add -A
+            git commit -m "fix: automated fixes by AI Agent (run ${{ github.run_id }})"
+            git push origin "$BRANCH"
+
             gh pr create \
-              --title "Automated fix by AI Agent" \
-              --body "The AI Agent detected a test failure and has generated this fix. Please review." \
-              --head ai-fix-${{ github.run_id }} \
+              --title "🤖 Automated fix by AI Agent (Run #${{ github.run_id }})" \
+              --body "The AI Agent detected test failures and generated fixes automatically.\n\n**Run ID:** ${{ github.run_id }}\n**Triggered by:** ${{ github.event_name }}\n\nPlease review the changes carefully before merging." \
+              --head "$BRANCH" \
               --base main
-        else
-            echo "No fixes generated. All tests passed."
-        fi
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          else
+            echo "No fixes generated. All tests passed or no changes needed."
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

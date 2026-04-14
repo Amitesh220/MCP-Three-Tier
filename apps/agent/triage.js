@@ -2,21 +2,38 @@ const OpenAI = require('openai');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+/**
+ * Classify a single test failure by severity and type using LLM.
+ * 
+ * @param {Object} issue - Failure object with { test, error, logs, type }
+ * @returns {{ severity: string, type: string, reason: string, originalIssue: Object }}
+ */
 async function classifyIssue(issue) {
+  const context = typeof issue === 'string'
+    ? issue
+    : `Test: ${issue.test}\nError: ${issue.error}\nType hint: ${issue.type}\nLogs: ${issue.logs || 'N/A'}`;
+
   const prompt = `
-Analyze the following test failure and classify its severity.
+Analyze the following test failure and classify it.
+
 Severity Levels:
-- CRITICAL: App crash, API failure, broken routes, or severe core logic fails.
-- HIGH: Business logic issues (wrong data, validation bugs).
-- MEDIUM: UI functional issues (buttons not working, state not updating).
-- LOW: Styling, alignment, or minor UI issues.
+- CRITICAL: App crash, API down, broken routes, server errors, connection failures.
+- HIGH: Business logic broken (wrong data, validation bugs, incorrect calculations).
+- MEDIUM: UI functional issues (buttons not working, state not updating, modal failures).
+- LOW: Styling, alignment, or minor cosmetic UI issues.
+
+Type Categories:
+- API: Backend/network/server/request related failures.
+- UI: Frontend rendering, element visibility, interaction failures.
+- LOGIC: Business logic, data processing, validation errors.
 
 Failure context:
-${issue}
+${context}
 
 Return ONLY a valid JSON object in this format:
 {
   "severity": "CRITICAL",
+  "type": "API",
   "reason": "short explanation"
 }`;
 
@@ -31,46 +48,78 @@ Return ONLY a valid JSON object in this format:
     });
 
     const result = JSON.parse(response.choices[0].message.content.trim());
+
+    // Validate severity
+    const validSeverities = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
+    if (!validSeverities.includes(result.severity)) {
+      result.severity = 'MEDIUM';
+    }
+
+    // Validate type
+    const validTypes = ['UI', 'API', 'LOGIC'];
+    if (!validTypes.includes(result.type)) {
+      result.type = issue.type || 'LOGIC';
+    }
+
     return { ...result, originalIssue: issue };
   } catch (err) {
-    console.error('Failed to classify issue:', err.message);
-    return { severity: 'MEDIUM', reason: 'Fallback due to classification error', originalIssue: issue };
+    console.error('[Triage] Failed to classify issue:', err.message);
+    return {
+      severity: 'MEDIUM',
+      type: (typeof issue === 'object' && issue.type) || 'LOGIC',
+      reason: 'Fallback due to classification error',
+      originalIssue: issue
+    };
   }
 }
 
+/**
+ * Sort classified issues by severity: CRITICAL > HIGH > MEDIUM > LOW
+ */
 function sortIssues(classifiedIssues) {
   const severityValue = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 };
-  
+
   return classifiedIssues.sort((a, b) => {
     return (severityValue[b.severity] || 0) - (severityValue[a.severity] || 0);
   });
 }
 
+/**
+ * Filter to keep only ALL CRITICAL and TOP 2 HIGH issues.
+ */
 function filterTopPriority(sortedIssues) {
   const criticals = sortedIssues.filter(i => i.severity === 'CRITICAL');
   const highs = sortedIssues.filter(i => i.severity === 'HIGH').slice(0, 2);
-  
+
   return [...criticals, ...highs];
 }
 
+/**
+ * Full triage pipeline: classify all → sort → filter top priority.
+ * 
+ * @param {Array} failuresList - Array of failure objects from MCP /run-tests
+ * @returns {Array} Prioritized issues (all CRITICAL + top 2 HIGH)
+ */
 async function triageIssues(failuresList) {
-  console.log(`[Triage] Starting triage for ${failuresList.length} issues...`);
-  
+  console.log(`\n[Triage] ========================================`);
+  console.log(`[Triage] Starting triage for ${failuresList.length} issue(s)...`);
+
   const classified = await Promise.all(failuresList.map(classifyIssue));
-  
+
   const stats = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
   classified.forEach(i => {
     stats[i.severity] = (stats[i.severity] || 0) + 1;
-    console.log(`[Triage] Classified issue as ${i.severity}: ${i.reason}`);
+    console.log(`[Triage]   → ${i.severity} | ${i.type} | ${i.reason}`);
   });
-  
+
   console.log(`[Triage] Breakdown: CRITICAL=${stats.CRITICAL}, HIGH=${stats.HIGH}, MEDIUM=${stats.MEDIUM}, LOW=${stats.LOW}`);
-  
+
   const sorted = sortIssues(classified);
   const prioritized = filterTopPriority(sorted);
-  
-  console.log(`[Triage] Forwarding ${prioritized.length} issues to fixing agent (ALL CRITICAL and max 2 HIGH). Skipping remaining...`);
-  
+
+  console.log(`[Triage] Forwarding ${prioritized.length} issue(s) to fixing agent (ALL CRITICAL + max 2 HIGH). Skipping ${classified.length - prioritized.length} lower-priority issues.`);
+  console.log(`[Triage] ========================================\n`);
+
   return prioritized;
 }
 
