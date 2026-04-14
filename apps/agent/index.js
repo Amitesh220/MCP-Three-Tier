@@ -186,11 +186,47 @@ Return ONLY the relative file path (e.g., "apps/frontend/src/pages/Dashboard.jsx
 
     // 6b. Read the suspect file
     let fileContent;
+    let actualFilePath = suspectFilePath;
+    
+    console.log(`[Agent] Using file: ${actualFilePath}`);
     try {
-      fileContent = await readFile(suspectFilePath);
+      fileContent = await readFile(actualFilePath);
+      console.log(`[Agent] File exists: true`);
     } catch (err) {
-      console.log(`[Agent] ⚠️  Failed to read file ${suspectFilePath}: ${err.message}. Skipping.`);
-      continue;
+      console.log(`[Agent] File exists: false`);
+      console.log(`[Agent] 🔍 Running fallback search for correct file...`);
+      
+      try {
+        // Fallback: strictly find files in frontend containing "create", "button", or "testid"
+        const grepOutput = execSync(`git grep -ilE "create|button|testid" -- apps/frontend/src/ || true`, { cwd: WORKSPACE_DIR, encoding: 'utf8' }).trim();
+        const foundFiles = grepOutput.split('\n').filter(Boolean);
+        
+        if (foundFiles.length > 0) {
+          const fallbackPrompt = `The previous file did not exist. The test failed with:
+${failure.error}
+
+Here are the EXISTING files related to components, buttons, and tests:
+${foundFiles.join('\n')}
+
+Identify which of these EXISTING files is most likely causing the issue. Return ONLY the exact file path from the list.`;
+
+          const fallbackRes = await openai.chat.completions.create({
+            model: 'gpt-4o-mini',
+            messages: [{ role: 'user', content: fallbackPrompt }]
+          });
+          
+          actualFilePath = fallbackRes.choices[0].message.content.trim().replace(/['"`]/g, '');
+          console.log(`[Agent] Using file: ${actualFilePath}`);
+          
+          fileContent = await readFile(actualFilePath);
+          console.log(`[Agent] File exists: true`);
+        } else {
+          throw new Error("No fallback files matched keywords");
+        }
+      } catch (fallbackErr) {
+        console.log(`[Agent] ⚠️  Skipping invalid file. Fallback failed: ${fallbackErr.message}`);
+        continue;
+      }
     }
 
     // 6c. Generate minimal fix via LLM
@@ -202,7 +238,7 @@ FAILING TEST:
 - Error: ${failure.error}
 - Type: ${failure.type}
 
-FILE TO FIX: ${suspectFilePath}
+FILE TO FIX: ${actualFilePath}
 \`\`\`
 ${fileContent}
 \`\`\`
@@ -230,16 +266,16 @@ Do NOT add any explanations before or after the code.`;
     }
 
     // 6d. Apply the fix (file write via MCP)
-    const applyResult = await applyFix(suspectFilePath, newContent);
-    console.log(`[Agent]    ✅ Fix applied: ${applyResult.message}`);
-    console.log(`[Agent]    ✅ File updated: ${suspectFilePath}`);
+    const applyResult = await applyFix(actualFilePath, newContent);
+    console.log(`[Agent]    ✅ Fix applied successfully`);
+    console.log(`[Agent]    ✅ File updated: ${actualFilePath}`);
 
     // 6e. Stage and commit only the changed file
-    gitExec(`git add ${suspectFilePath}`);
-    gitExec(`git commit -m "fix: ${issueObj.severity} - ${failure.test} (${suspectFilePath})"`);
+    gitExec(`git add ${actualFilePath}`);
+    gitExec(`git commit -m "fix: ${issueObj.severity} - ${failure.test} (${actualFilePath})"`);
     fixesApplied++;
 
-    console.log(`[Agent]    ✅ Committed fix for ${suspectFilePath}`);
+    console.log(`[Agent]    ✅ Git commit successful`);
   }
 
   // ── Step 7: Push branch + Create PR ────────────────────────────
@@ -275,6 +311,15 @@ async function main() {
   console.log(`[Agent] Poll interval: ${POLL_INTERVAL_MS / 1000}s`);
   console.log(`[Agent] MCP server: ${MCP_SERVER_URL}`);
   console.log('[Agent] ============================================\n');
+
+  // Configure git for the agent identity explicitly at startup
+  console.log('[Agent] 🔧 Configuring global Git identity...');
+  try {
+    gitExec('git config --global user.name "AI DevOps Agent"');
+    gitExec('git config --global user.email "agent@ai-devops.local"');
+  } catch (err) {
+    console.log(`[Agent] ⚠️  Warning: Failed to configure git identity. Commits may fail. (${err.message})`);
+  }
 
   // Wait for MCP server readiness once at startup
   await waitForMCP();
