@@ -35,6 +35,7 @@ services:
     env_file:
       - ./apps/agent/.env
     volumes:
-      - .:/workspace   # Mounted repo for git operations
+      - .:/workspace
     depends_on:
       - mcp-server
+  restart: always   
