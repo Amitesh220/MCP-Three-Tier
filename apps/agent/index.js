@@ -6,8 +6,17 @@ const path = require('path');
 const { triageIssues } = require('./triage');
 
 const MCP_SERVER_URL = process.env.MCP_SERVER_URL || 'http://localhost:4000';
-const WORKSPACE_DIR = process.env.WORKSPACE_DIR || path.join(__dirname, '../../');
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+// In Docker, the repo is mounted at /workspace. Switch cwd so git operations work.
+try {
+  process.chdir('/workspace');
+  console.log('[Agent] Working directory set to /workspace');
+} catch {
+  console.log(`[Agent] /workspace not found, using default cwd: ${process.cwd()}`);
+}
+
+const WORKSPACE_DIR = process.cwd();
 
 // ─── Helper: Call MCP /run-tests ───────────────────────────────────────
 async function runTests() {

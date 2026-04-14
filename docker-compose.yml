@@ -34,5 +34,8 @@ services:
       context: ./apps/agent
     env_file:
       - ./apps/agent/.env
+    volumes:
+      - .:/workspace   # ✅ IMPORTANT
+    working_dir: /workspace
     depends_on:
       - mcp-server
