@@ -145,12 +145,16 @@ app.post('/read-file', (req, res) => {
   const { filePath } = req.body;
   if (!filePath) return res.status(400).json({ error: 'filePath is required' });
 
-  // Always resolve against /workspace (Docker mount) or fallback
-  const baseDir = path.resolve(WORKSPACE_DIR);
-  const absolutePath = path.join(baseDir, filePath);
+  // Force base directory to ALWAYS be "/workspace"
+  const baseDir = "/workspace";
+  
+  // Safe resolution: strip leading slash from filePath to prevent path.resolve from escaping the root
+  const safeFilePath = filePath.replace(/^\/+/, '');
+  const absolutePath = path.resolve(baseDir, safeFilePath);
 
-  console.log(`[MCP] Reading file: ${filePath}`);
-  console.log(`[MCP]   Resolved path: ${absolutePath}`);
+  console.log("BaseDir:", baseDir);
+  console.log("Requested:", filePath);
+  console.log("Resolved:", absolutePath);
 
   // Security: prevent path traversal outside workspace
   if (!absolutePath.startsWith(baseDir)) {
@@ -182,11 +186,16 @@ app.post('/apply-fix', (req, res) => {
     return res.status(400).json({ error: 'filePath and content are required' });
   }
 
-  const baseDir = path.resolve(WORKSPACE_DIR);
-  const absolutePath = path.join(baseDir, filePath);
+  // Force base directory to ALWAYS be "/workspace"
+  const baseDir = "/workspace";
+  
+  // Safe resolution: strip leading slash from filePath to prevent path.resolve from escaping the root
+  const safeFilePath = filePath.replace(/^\/+/, '');
+  const absolutePath = path.resolve(baseDir, safeFilePath);
 
-  console.log(`[MCP] Writing file: ${filePath}`);
-  console.log(`[MCP]   Resolved path: ${absolutePath}`);
+  console.log("BaseDir:", baseDir);
+  console.log("Requested:", filePath);
+  console.log("Resolved:", absolutePath);
 
   if (!absolutePath.startsWith(baseDir)) {
     return res.status(403).json({ error: 'Access denied outside workspace' });
