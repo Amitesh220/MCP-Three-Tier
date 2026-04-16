@@ -18,6 +18,14 @@ try {
   console.log(`[Agent] ⚠️ Could not chdir to /workspace. Ensure it is mounted! (${err.message})`);
 }
 
+// Fix "dubious ownership" — volume mounts have different uid/gid than container user
+try {
+  execSync('git config --global --add safe.directory /workspace', { encoding: 'utf8', stdio: 'pipe' });
+  console.log('[Agent] Configured Git safe.directory for /workspace');
+} catch (err) {
+  console.log(`[Agent] ⚠️ Could not set safe.directory: ${err.message}`);
+}
+
 // Force all git commands to strictly run in /workspace
 const WORKSPACE_DIR = '/workspace';
 
