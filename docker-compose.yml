@@ -32,13 +32,15 @@ services:
   agent:
     build:
       context: ./apps/agent
+    ports:
+      - "3001:3001"
     env_file:
       - ./apps/agent/.env
     volumes:
       - .:/workspace
     depends_on:
       - mcp-server
-    restart: on-failure
+    restart: unless-stopped
 
   orchestration-api:
     build:

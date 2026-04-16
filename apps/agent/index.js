@@ -6,7 +6,6 @@ const path = require('path');
 const { triageIssues } = require('./triage');
 
 const MCP_SERVER_URL = process.env.MCP_SERVER_URL || 'http://localhost:4000';
-const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS) || 60000; // 1 min between cycles
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // In Docker, the repo is mounted at /workspace.
@@ -314,40 +313,76 @@ Do NOT add any explanations before or after the code.`;
   }
 }
 
-// ─── Continuous Pipeline Loop ──────────────────────────────────────────
-async function main() {
-  console.log('\n[Agent] ============================================');
-  console.log('[Agent] 🤖 AI DevOps Agent — Continuous Mode');
-  console.log(`[Agent] Poll interval: ${POLL_INTERVAL_MS / 1000}s`);
-  console.log(`[Agent] MCP server: ${MCP_SERVER_URL}`);
-  console.log('[Agent] ============================================\n');
+// ─── Express API Server (Orchestration-Triggered) ─────────────────────
+const express = require('express');
+const app = express();
+const AGENT_PORT = parseInt(process.env.AGENT_PORT) || 3001;
 
-  // Configure git for the agent identity explicitly at startup
-  console.log('[Agent] 🔧 Configuring global Git identity...');
-  try {
-    gitExec('git config --global user.name "AI DevOps Agent"');
-    gitExec('git config --global user.email "agent@ai-devops.local"');
-  } catch (err) {
-    console.log(`[Agent] ⚠️  Warning: Failed to configure git identity. Commits may fail. (${err.message})`);
-  }
+app.use(express.json());
 
-  // Wait for MCP server readiness once at startup
-  await waitForMCP();
+// Concurrency guard — only one pipeline at a time
+let isRunning = false;
+let pipelineCount = 0;
 
-  let cycle = 0;
+// ─── Startup: configure git identity ──────────────────────────────────
+console.log('\n[Agent] ============================================');
+console.log('[Agent] 🤖 AI DevOps Agent — API Mode');
+console.log(`[Agent] MCP server: ${MCP_SERVER_URL}`);
+console.log('[Agent] ============================================\n');
 
-  while (true) {
-    cycle++;
-
-    try {
-      await runCycle(cycle);
-    } catch (err) {
-      console.error(`[Agent] ❌ Cycle #${cycle} failed:`, err.response?.data || err.message);
-    }
-
-    console.log(`[Agent] 💤 Polling for updates in ${POLL_INTERVAL_MS / 1000}s...\n`);
-    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
-  }
+console.log('[Agent] 🔧 Configuring global Git identity...');
+try {
+  gitExec('git config --global user.name "AI DevOps Agent"');
+  gitExec('git config --global user.email "agent@ai-devops.local"');
+} catch (err) {
+  console.log(`[Agent] ⚠️  Warning: Failed to configure git identity. Commits may fail. (${err.message})`);
 }
 
-main();
+// ─── GET /health ──────────────────────────────────────────────────────
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    isRunning,
+    pipelineCount,
+    uptime: process.uptime()
+  });
+});
+
+// ─── POST /run-pipeline ───────────────────────────────────────────────
+app.post('/run-pipeline', async (req, res) => {
+  if (isRunning) {
+    console.log('[Agent] ⚠️  Pipeline already running. Rejecting request.');
+    return res.status(409).json({
+      status: 'rejected',
+      message: 'Pipeline is already running. Try again later.'
+    });
+  }
+
+  // Respond immediately, run pipeline in background
+  res.json({
+    status: 'started',
+    message: 'Pipeline execution triggered'
+  });
+
+  // Execute pipeline asynchronously
+  isRunning = true;
+  pipelineCount++;
+  const cycleNum = pipelineCount;
+
+  try {
+    // Ensure MCP is reachable before running
+    await waitForMCP(5, 2000);
+    await runCycle(cycleNum);
+    console.log(`[Agent] ✅ Pipeline #${cycleNum} completed successfully.`);
+  } catch (err) {
+    console.error(`[Agent] ❌ Pipeline #${cycleNum} failed:`, err.response?.data || err.message);
+  } finally {
+    isRunning = false;
+  }
+});
+
+// ─── Start Server ─────────────────────────────────────────────────────
+app.listen(AGENT_PORT, () => {
+  console.log(`[Agent] 🚀 Agent API listening on port ${AGENT_PORT}`);
+  console.log(`[Agent] 📡 Trigger pipeline: POST http://localhost:${AGENT_PORT}/run-pipeline`);
+});

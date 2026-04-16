@@ -52,10 +52,11 @@ app.get('/system/state', async (req, res) => {
   logStore.addLog('orchestration', 'info', 'System state requested');
 
   // Check all services in parallel
-  const [backendStatus, frontendStatus, mcpStatus] = await Promise.all([
+  const [backendStatus, frontendStatus, mcpStatus, agentStatus] = await Promise.all([
     checkService('backend', BACKEND_URL, '/api/items'),
     checkService('frontend', FRONTEND_URL, '/'),
-    checkService('mcp', MCP_SERVER_URL, '/health')
+    checkService('mcp', MCP_SERVER_URL, '/health'),
+    checkService('agent', AGENT_URL, '/health')
   ]);
 
   const state = {
@@ -63,9 +64,10 @@ app.get('/system/state', async (req, res) => {
     status: {
       backend: backendStatus.status,
       frontend: frontendStatus.status,
-      mcp: mcpStatus.status
+      mcp: mcpStatus.status,
+      agent: agentStatus.status
     },
-    services: [backendStatus, frontendStatus, mcpStatus],
+    services: [backendStatus, frontendStatus, mcpStatus, agentStatus],
     lastRun: logStore.getLastRunTimestamp()
   };
 
@@ -172,29 +174,24 @@ app.post('/action/run-tests', async (req, res) => {
 // ──────────────────────────────────────
 app.post('/action/fix', async (req, res) => {
   console.log('[Orchestration] POST /action/fix');
-  logStore.addLog('orchestration', 'info', 'Manual fix pipeline triggered');
+  logStore.addLog('orchestration', 'info', 'Fix pipeline triggered via orchestration');
 
   try {
-    // The agent runs as a continuous loop; to trigger an immediate cycle,
-    // we call MCP tests first, then proxy the result to the agent webhook (if available).
-    // For now, we trigger an on-demand test + triage sequence through MCP.
-    const testResult = await axios.post(`${MCP_SERVER_URL}/run-tests`, {}, { timeout: 180000 });
-    logStore.setLatestTestResult(testResult.data);
-
-    if (!testResult.data.success && testResult.data.failures?.length > 0) {
-      logStore.addLog('agent', 'info', `Fix triggered: ${testResult.data.failures.length} failure(s) detected`);
-      res.json({
-        triggered: true,
-        message: `${testResult.data.failures.length} failure(s) found. Agent will pick up in next cycle.`,
-        failures: testResult.data.failures
-      });
-    } else {
-      logStore.addLog('agent', 'success', 'All tests passed — no fix needed');
-      res.json({ triggered: false, message: 'All tests passing. No fix needed.' });
-    }
+    // Call the agent's /run-pipeline endpoint directly
+    const agentRes = await axios.post(`${AGENT_URL}/run-pipeline`, {}, { timeout: 5000 });
+    logStore.addLog('agent', 'info', `Agent responded: ${agentRes.data.message}`);
+    res.json({
+      triggered: true,
+      agent: agentRes.data
+    });
   } catch (err) {
-    logStore.addLog('agent', 'error', `Fix trigger failed: ${err.message}`);
-    res.status(500).json({ triggered: false, error: err.message });
+    if (err.response?.status === 409) {
+      logStore.addLog('agent', 'warn', 'Pipeline already running — request rejected');
+      res.status(409).json({ triggered: false, message: 'Agent pipeline is already running. Try again later.' });
+    } else {
+      logStore.addLog('agent', 'error', `Failed to trigger agent: ${err.message}`);
+      res.status(500).json({ triggered: false, error: err.message });
+    }
   }
 });
 
